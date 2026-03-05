@@ -25,35 +25,35 @@ beforeEach(() => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// [REG] Validation — these tests must pass before and after your changes
+// [REG] Validation — these must pass before and after your changes
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('[REG] Input validation', () => {
-  test('should reject event with missing eventId', () => {
+  test('should reject an event with no eventId', () => {
     const result = processor.process(makeEvent({ eventId: '' }));
     expect(result.accepted).toBe(false);
     expect(result.reason).toBe('invalid');
   });
 
-  test('should reject event with missing driverId', () => {
+  test('should reject an event with no driverId', () => {
     const result = processor.process(makeEvent({ driverId: '' }));
     expect(result.accepted).toBe(false);
     expect(result.reason).toBe('invalid');
   });
 
-  test('should reject event with missing type', () => {
+  test('should reject an event with no type', () => {
     const result = processor.process(makeEvent({ type: '' as any }));
     expect(result.accepted).toBe(false);
     expect(result.reason).toBe('invalid');
   });
 
-  test('should accept a valid TRIP_STARTED event', () => {
+  test('should accept a well-formed TRIP_STARTED event', () => {
     const result = processor.process(makeEvent());
     expect(result.accepted).toBe(true);
     expect(result.eventId).toBe('evt-001');
   });
 
-  test('should return zeroed stats for an unknown driver', () => {
+  test('should return zeroed stats for a driver with no events', () => {
     const stats = processor.getStats('nobody');
     expect(stats.totalTrips).toBe(0);
     expect(stats.completedTrips).toBe(0);
@@ -62,33 +62,33 @@ describe('[REG] Input validation', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// [BUG] Deduplication — fix the dedup logic in processor.ts
+// [BUG] Deduplication — something is wrong with how events are de-duplicated
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('[BUG] Deduplication', () => {
-  test('should accept TRIP_COMPLETED after TRIP_STARTED for the same trip', () => {
-    processor.process(makeEvent({ eventId: 'e-start', tripId: 'T1', type: 'TRIP_STARTED' }));
+  test('all events in a trip lifecycle should be stored', () => {
+    processor.process(makeEvent({ eventId: 'e-start',    tripId: 'T1', type: 'TRIP_STARTED' }));
     const result = processor.process(makeEvent({ eventId: 'e-complete', tripId: 'T1', type: 'TRIP_COMPLETED', durationMs: 5000, distanceKm: 3 }));
     expect(result.accepted).toBe(true);
   });
 
-  test('should accept TRIP_CANCELLED after TRIP_STARTED for the same trip', () => {
-    processor.process(makeEvent({ eventId: 'e-start', tripId: 'T1', type: 'TRIP_STARTED' }));
+  test('a cancelled trip should have all its events stored', () => {
+    processor.process(makeEvent({ eventId: 'e-start',  tripId: 'T1', type: 'TRIP_STARTED' }));
     const result = processor.process(makeEvent({ eventId: 'e-cancel', tripId: 'T1', type: 'TRIP_CANCELLED' }));
     expect(result.accepted).toBe(true);
   });
 
-  test('should reject a duplicate eventId submitted twice', () => {
+  test('submitting the same event twice should only store it once', () => {
     const event = makeEvent({ eventId: 'e-dup', tripId: 'T1' });
     processor.process(event);
-    const result = processor.process({ ...event, tripId: 'T-other' }); // same eventId, different tripId
+    const result = processor.process({ ...event, tripId: 'T-other' });
     expect(result.accepted).toBe(false);
     expect(result.reason).toBe('duplicate');
   });
 
-  test('processAll: should accept all three lifecycle events for a single trip', () => {
+  test('processAll should store every event in a complete trip lifecycle', () => {
     const events: TripEvent[] = [
-      makeEvent({ eventId: 'e1', tripId: 'T1', type: 'TRIP_STARTED', timestamp: 1000 }),
+      makeEvent({ eventId: 'e1', tripId: 'T1', type: 'TRIP_STARTED',   timestamp: 1000 }),
       makeEvent({ eventId: 'e2', tripId: 'T1', type: 'TRIP_COMPLETED', timestamp: 2000, durationMs: 1000, distanceKm: 5 }),
     ];
     const results = processor.processAll(events);
@@ -98,54 +98,50 @@ describe('[BUG] Deduplication', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// [BUG] Stats: completion — fix the type comparison in getStats
-// These tests seed the store directly so they are independent of the dedup bug
+// [BUG] Stats: completion — something is wrong with completed trip counting
+// Tests seed the store directly so they are independent of the dedup bug above
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('[BUG] Stats — completion counting', () => {
+describe('[BUG] Stats — completion', () => {
   beforeEach(() => {
-    // Seed directly to bypass dedup
     store.save({ eventId: 'e1', tripId: 'T1', driverId: 'D1', type: 'TRIP_STARTED',   timestamp: 1000 });
     store.save({ eventId: 'e2', tripId: 'T1', driverId: 'D1', type: 'TRIP_COMPLETED', timestamp: 2000, durationMs: 60_000, distanceKm: 5 });
     store.save({ eventId: 'e3', tripId: 'T2', driverId: 'D1', type: 'TRIP_STARTED',   timestamp: 3000 });
     store.save({ eventId: 'e4', tripId: 'T2', driverId: 'D1', type: 'TRIP_CANCELLED', timestamp: 4000 });
   });
 
-  test('should count completed trips correctly', () => {
+  test('completedTrips should reflect the number of completed events', () => {
     const stats = processor.getStats('D1');
     expect(stats.completedTrips).toBe(1);
   });
 
-  test('should compute completion rate correctly (1 completed / 2 started = 0.5)', () => {
+  test('completionRate should be the ratio of completed to started trips', () => {
     const stats = processor.getStats('D1');
     expect(stats.completionRate).toBe(0.5);
   });
 
-  test('should sum total distance across completed trips only', () => {
+  test('totalDistanceKm should be the sum across completed trips', () => {
     const stats = processor.getStats('D1');
     expect(stats.totalDistanceKm).toBe(5);
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// [BUG] Stats: average duration — fix the divisor in avgDurationMs calculation
+// [BUG] Stats: duration — avgDurationMs is computed incorrectly
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('[BUG] Stats — average duration', () => {
-  test('should compute avgDurationMs using only completed trips, not all events', () => {
-    // 1 completed trip (60s) + 2 other events = wrong if dividing by 3
+  test('avgDurationMs should not be diluted by non-completed events', () => {
     store.save({ eventId: 'e1', tripId: 'T1', driverId: 'D2', type: 'TRIP_STARTED',   timestamp: 1000 });
     store.save({ eventId: 'e2', tripId: 'T1', driverId: 'D2', type: 'TRIP_COMPLETED', timestamp: 2000, durationMs: 60_000, distanceKm: 3 });
     store.save({ eventId: 'e3', tripId: 'T2', driverId: 'D2', type: 'TRIP_STARTED',   timestamp: 3000 });
     store.save({ eventId: 'e4', tripId: 'T2', driverId: 'D2', type: 'TRIP_CANCELLED', timestamp: 4000 });
 
     const stats = processor.getStats('D2');
-    // Correct: 60_000 / 1 = 60_000 ms
-    // Buggy:   60_000 / 4 = 15_000 ms
     expect(stats.avgDurationMs).toBe(60_000);
   });
 
-  test('should return avgDurationMs of 0 when driver has no completed trips', () => {
+  test('avgDurationMs should be 0 when the driver has no completed trips', () => {
     store.save({ eventId: 'e1', tripId: 'T1', driverId: 'D3', type: 'TRIP_STARTED', timestamp: 1000 });
     const stats = processor.getStats('D3');
     expect(stats.avgDurationMs).toBe(0);

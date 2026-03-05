@@ -2,7 +2,6 @@ import { TripEvent, DriverStats, ProcessResult } from './types';
 import { EventStore } from './db';
 
 export class TripProcessor {
-  // Tracks IDs we have already seen to prevent duplicate processing
   private seenIds: Set<string> = new Set();
 
   constructor(private store: EventStore) {}
@@ -12,18 +11,14 @@ export class TripProcessor {
    * Returns accepted:true if the event was stored, accepted:false otherwise.
    */
   process(event: TripEvent): ProcessResult {
-    // Validate required fields
     if (!event.eventId || !event.tripId || !event.driverId || !event.type) {
       return { accepted: false, eventId: event.eventId ?? '', reason: 'invalid' };
     }
 
-    // BUG 1: Deduplication should be based on eventId (each event is unique).
-    // Using tripId here incorrectly rejects TRIP_COMPLETED / TRIP_CANCELLED
-    // events because their tripId was already seen from TRIP_STARTED.
     if (this.seenIds.has(event.tripId)) {
       return { accepted: false, eventId: event.eventId, reason: 'duplicate' };
     }
-    this.seenIds.add(event.tripId); // should be: this.seenIds.add(event.eventId)
+    this.seenIds.add(event.tripId);
 
     this.store.save(event);
     return { accepted: true, eventId: event.eventId };
@@ -35,10 +30,7 @@ export class TripProcessor {
   getStats(driverId: string): DriverStats {
     const all = this.store.findByDriverId(driverId);
 
-    // BUG 2: Wrong event type string — 'TRIP_COMPLETE' instead of 'TRIP_COMPLETED'
-    // This means completedTrips is always 0, which cascades into completionRate
-    // and totalDistanceKm also being wrong.
-    const completed = all.filter(e => e.type === 'TRIP_COMPLETE'); // should be: 'TRIP_COMPLETED'
+    const completed = all.filter(e => e.type === 'TRIP_COMPLETE');
 
     const cancelled = all.filter(e => e.type === 'TRIP_CANCELLED');
 
@@ -52,12 +44,9 @@ export class TripProcessor {
 
     const withDuration = completed.filter(e => e.durationMs !== undefined);
 
-    // BUG 3: Divides by `all.length` (total events for driver) instead of
-    // `withDuration.length` (completed events that have a duration).
-    // When a driver has started/cancelled trips, the average gets artificially diluted.
     const avgDurationMs =
       withDuration.length > 0
-        ? withDuration.reduce((sum, e) => sum + (e.durationMs ?? 0), 0) / all.length // should be: / withDuration.length
+        ? withDuration.reduce((sum, e) => sum + (e.durationMs ?? 0), 0) / all.length
         : 0;
 
     const completionRate =
